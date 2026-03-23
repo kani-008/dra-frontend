@@ -2,15 +2,21 @@
 
 import axios from 'axios';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+// ── Base URL ──────────────────────────────────────────────────────────────────
+// VITE_API_URL must be set in Vercel's environment variables:
+//   VITE_API_URL = https://dra-backend-z8sd.onrender.com
+// Without it the frontend falls back to localhost — nothing works in production.
+const BASE_URL =
+  import.meta.env.VITE_API_URL?.replace(/\/$/, '') || 'http://localhost:5000';
 
 const api = axios.create({
-  baseURL: `${API}/api`,
+  baseURL: `${BASE_URL}/api/v1`,   // always use the versioned prefix
   headers: { 'Content-Type': 'application/json' },
-  timeout: 60000,
+  timeout: 90000, // 90 s — handles Render cold-start (can take ~50 s on free tier)
+  withCredentials: false,
 });
 
-// Attach JWT token to every request
+// ── Request interceptor — attach JWT ─────────────────────────────────────────
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
@@ -24,7 +30,7 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Handle 401 and server errors
+// ── Response interceptor — handle 401 + selective retry ──────────────────────
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -33,20 +39,26 @@ api.interceptors.response.use(
     if (error.response?.status === 401) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
-      window.location.href = '/login';
+      // Redirect only when not already on an auth page
+      if (
+        !window.location.pathname.startsWith('/login') &&
+        !window.location.pathname.startsWith('/signup')
+      ) {
+        window.location.href = '/login';
+      }
       return Promise.reject(new Error('Session expired. Please log in again.'));
     }
 
-    // Retry on 5xx (max 2 retries) — skip uploads to avoid double-ingestion
+    // Retry 5xx errors — but never for uploads (would double-ingest the file)
     const isUpload = config?.url?.includes('/uploads');
     if (
       config &&
       !isUpload &&
-      (!config.retryCount || config.retryCount < 2) &&
+      (!config._retryCount || config._retryCount < 2) &&
       error.response?.status >= 500
     ) {
-      config.retryCount = (config.retryCount || 0) + 1;
-      await new Promise((r) => setTimeout(r, 1000));
+      config._retryCount = (config._retryCount || 0) + 1;
+      await new Promise((r) => setTimeout(r, 1500 * config._retryCount));
       return api(config);
     }
 
@@ -56,15 +68,15 @@ api.interceptors.response.use(
   }
 );
 
-// ─── Auth ────────────────────────────────────────────────────────────────────
+// ── Auth ──────────────────────────────────────────────────────────────────────
 
 export const loginUser = async (email, password) => {
-  const response = await api.post('/v1/auth/login', { email, password });
+  const response = await api.post('/auth/login', { email, password });
   return response.data.data; // { token, user }
 };
 
 export const signupUser = async (name, email, password) => {
-  const response = await api.post('/v1/auth/signup', {
+  const response = await api.post('/auth/signup', {
     name,
     email,
     password,
@@ -73,77 +85,73 @@ export const signupUser = async (name, email, password) => {
   return response.data.data;
 };
 
-// ─── Chat ────────────────────────────────────────────────────────────────────
+// ── Chat ──────────────────────────────────────────────────────────────────────
 
 export const sendMessage = async (message, sessionId) => {
-  const response = await api.post('/v1/chat', { message, sessionId });
+  const response = await api.post('/chat', { message, sessionId });
   return response.data.data.response;
 };
 
 export const fetchChatHistory = async (page = 1, limit = 50, sessionId = null) => {
   const params = { page, limit };
   if (sessionId) params.sessionId = sessionId;
-  const response = await api.get('/v1/chat/history', { params });
+  const response = await api.get('/chat/history', { params });
   return response.data;
 };
 
 export const deleteChatById = async (chatId) => {
-  const response = await api.delete(`/v1/chat/${chatId}`);
+  const response = await api.delete(`/chat/${chatId}`);
   return response.data;
 };
 
 export const deleteChatSession = async (sessionId) => {
-  const response = await api.delete(`/v1/chat/session/${sessionId}`);
+  const response = await api.delete(`/chat/session/${sessionId}`);
   return response.data;
 };
 
 export const updateChatFeedback = async (chatId, feedback) => {
-  const response = await api.patch(`/v1/chat/${chatId}/feedback`, feedback);
+  const response = await api.patch(`/chat/${chatId}/feedback`, feedback);
   return response.data;
 };
 
-// ─── Uploads ─────────────────────────────────────────────────────────────────
+// ── Uploads ───────────────────────────────────────────────────────────────────
 
-/**
- * Upload a PDF file — ingested into n8n → Drive → Qdrant → MongoDB
- */
 export const uploadFile = async (file) => {
   const formData = new FormData();
   formData.append('file', file);
-  return api.post('/v1/uploads', formData, {
-    headers: {
-      'Content-Type': undefined, 
-    },
-    timeout: 120000,
+  return api.post('/uploads', formData, {
+    headers: { 'Content-Type': undefined }, // let browser set multipart boundary
+    timeout: 180000, // 3 min — large PDFs + n8n ingestion can be slow
   });
 };
 
-/**
- * Fetch all uploaded documents for the current user from MongoDB
- */
 export const fetchUploadHistory = async (page = 1, limit = 50) => {
-  const response = await api.get('/v1/uploads', { params: { page, limit } });
+  const response = await api.get('/uploads', { params: { page, limit } });
   return response.data;
 };
 
-/**
- * Delete a document — removes from Drive, Qdrant, and MongoDB
- */
 export const deleteDocument = async (uploadId) => {
-  const response = await api.delete(`/v1/uploads/${uploadId}`);
+  const response = await api.delete(`/uploads/${uploadId}`);
   return response.data;
 };
 
-// ─── Contact ────────────────────────────────────────────────────────────────
+// ── Contact ───────────────────────────────────────────────────────────────────
+
 export const sendContactForm = async (formData) => {
-  const response = await api.post('/v1/contact', formData);
+  const response = await api.post('/contact', formData);
   return response.data;
 };
 
-// ─── Analytics ───────────────────────────────────────────────────────────────
+// ── Analytics ─────────────────────────────────────────────────────────────────
+
 export const fetchAnalyticsDataApi = async () => {
-  const response = await api.get('/v1/analytics');
+  const response = await api.get('/analytics');
   return response.data; // { success, data }
+};
+
+// ── Health ping — call once on app start to wake Render's free-tier instance ──
+export const pingBackend = () => {
+  fetch(`${BASE_URL}/health`, { method: 'GET' }).catch(() => {});
 };
 
 export default api;
