@@ -2,21 +2,19 @@
 
 import axios from 'axios';
 
-// ── Base URL ──────────────────────────────────────────────────────────────────
-// VITE_API_URL must be set in Vercel's environment variables:
-//   VITE_API_URL = https://dra-backend-z8sd.onrender.com
-// Without it the frontend falls back to localhost — nothing works in production.
-const BASE_URL =
-  import.meta.env.VITE_API_URL?.replace(/\/$/, '') || 'http://localhost:5000';
+// VITE_API_URL must be set in Vercel Environment Variables:
+//   Key:   VITE_API_URL
+//   Value: https://dra-backend-z8sd.onrender.com
+const BASE = (import.meta.env.VITE_API_URL || 'http://localhost:5000').replace(/\/$/, '');
 
 const api = axios.create({
-  baseURL: `${BASE_URL}/api/v1`,   // always use the versioned prefix
+  baseURL: `${BASE}/api/v1`,
   headers: { 'Content-Type': 'application/json' },
-  timeout: 90000, // 90 s — handles Render cold-start (can take ~50 s on free tier)
+  timeout: 90000,
   withCredentials: false,
 });
 
-// ── Request interceptor — attach JWT ─────────────────────────────────────────
+// ── Attach JWT on every request ───────────────────────────────────────────────
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
@@ -30,7 +28,7 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// ── Response interceptor — handle 401 + selective retry ──────────────────────
+// ── Handle 401 + selective 5xx retry ─────────────────────────────────────────
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -39,7 +37,6 @@ api.interceptors.response.use(
     if (error.response?.status === 401) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
-      // Redirect only when not already on an auth page
       if (
         !window.location.pathname.startsWith('/login') &&
         !window.location.pathname.startsWith('/signup')
@@ -49,7 +46,7 @@ api.interceptors.response.use(
       return Promise.reject(new Error('Session expired. Please log in again.'));
     }
 
-    // Retry 5xx errors — but never for uploads (would double-ingest the file)
+    // Retry 5xx — skip uploads to avoid double-ingestion
     const isUpload = config?.url?.includes('/uploads');
     if (
       config &&
@@ -69,10 +66,9 @@ api.interceptors.response.use(
 );
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
-
 export const loginUser = async (email, password) => {
   const response = await api.post('/auth/login', { email, password });
-  return response.data.data; // { token, user }
+  return response.data.data;
 };
 
 export const signupUser = async (name, email, password) => {
@@ -86,7 +82,6 @@ export const signupUser = async (name, email, password) => {
 };
 
 // ── Chat ──────────────────────────────────────────────────────────────────────
-
 export const sendMessage = async (message, sessionId) => {
   const response = await api.post('/chat', { message, sessionId });
   return response.data.data.response;
@@ -115,13 +110,12 @@ export const updateChatFeedback = async (chatId, feedback) => {
 };
 
 // ── Uploads ───────────────────────────────────────────────────────────────────
-
 export const uploadFile = async (file) => {
   const formData = new FormData();
   formData.append('file', file);
   return api.post('/uploads', formData, {
-    headers: { 'Content-Type': undefined }, // let browser set multipart boundary
-    timeout: 180000, // 3 min — large PDFs + n8n ingestion can be slow
+    headers: { 'Content-Type': undefined },
+    timeout: 180000,
   });
 };
 
@@ -136,22 +130,20 @@ export const deleteDocument = async (uploadId) => {
 };
 
 // ── Contact ───────────────────────────────────────────────────────────────────
-
 export const sendContactForm = async (formData) => {
   const response = await api.post('/contact', formData);
   return response.data;
 };
 
 // ── Analytics ─────────────────────────────────────────────────────────────────
-
 export const fetchAnalyticsDataApi = async () => {
   const response = await api.get('/analytics');
-  return response.data; // { success, data }
+  return response.data;
 };
 
-// ── Health ping — call once on app start to wake Render's free-tier instance ──
+// ── Wake up Render backend (handles free-tier cold start) ─────────────────────
 export const pingBackend = () => {
-  fetch(`${BASE_URL}/health`, { method: 'GET' }).catch(() => {});
+  fetch(`${BASE}/health`, { method: 'GET' }).catch(() => {});
 };
 
 export default api;
