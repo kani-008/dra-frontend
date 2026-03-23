@@ -2,7 +2,8 @@
 
 import axios from 'axios';
 
-// VITE_API_URL must be set in Vercel Environment Variables:
+// ─── Base URL ─────────────────────────────────────────────────────────────────
+// Set in Vercel → Settings → Environment Variables:
 //   Key:   VITE_API_URL
 //   Value: https://dra-backend-z8sd.onrender.com
 const BASE = (import.meta.env.VITE_API_URL || 'http://localhost:5000').replace(/\/$/, '');
@@ -14,7 +15,7 @@ const api = axios.create({
   withCredentials: false,
 });
 
-// ── Attach JWT on every request ───────────────────────────────────────────────
+// ─── Attach JWT ───────────────────────────────────────────────────────────────
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
@@ -28,7 +29,7 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// ── Handle 401 + selective 5xx retry ─────────────────────────────────────────
+// ─── Handle errors ────────────────────────────────────────────────────────────
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -46,7 +47,7 @@ api.interceptors.response.use(
       return Promise.reject(new Error('Session expired. Please log in again.'));
     }
 
-    // Retry 5xx — skip uploads to avoid double-ingestion
+    // Retry 5xx — never for uploads (would double-ingest)
     const isUpload = config?.url?.includes('/uploads');
     if (
       config &&
@@ -65,7 +66,7 @@ api.interceptors.response.use(
   }
 );
 
-// ── Auth ──────────────────────────────────────────────────────────────────────
+// ─── Auth ─────────────────────────────────────────────────────────────────────
 export const loginUser = async (email, password) => {
   const response = await api.post('/auth/login', { email, password });
   return response.data.data;
@@ -81,7 +82,7 @@ export const signupUser = async (name, email, password) => {
   return response.data.data;
 };
 
-// ── Chat ──────────────────────────────────────────────────────────────────────
+// ─── Chat ─────────────────────────────────────────────────────────────────────
 export const sendMessage = async (message, sessionId) => {
   const response = await api.post('/chat', { message, sessionId });
   return response.data.data.response;
@@ -109,7 +110,7 @@ export const updateChatFeedback = async (chatId, feedback) => {
   return response.data;
 };
 
-// ── Uploads ───────────────────────────────────────────────────────────────────
+// ─── Uploads ──────────────────────────────────────────────────────────────────
 export const uploadFile = async (file) => {
   const formData = new FormData();
   formData.append('file', file);
@@ -129,19 +130,19 @@ export const deleteDocument = async (uploadId) => {
   return response.data;
 };
 
-// ── Contact ───────────────────────────────────────────────────────────────────
+// ─── Contact ──────────────────────────────────────────────────────────────────
 export const sendContactForm = async (formData) => {
   const response = await api.post('/contact', formData);
   return response.data;
 };
 
-// ── Analytics ─────────────────────────────────────────────────────────────────
+// ─── Analytics ────────────────────────────────────────────────────────────────
 export const fetchAnalyticsDataApi = async () => {
   const response = await api.get('/analytics');
   return response.data;
 };
 
-// ── Wake up Render backend (handles free-tier cold start) ─────────────────────
+// ─── Ping backend on load (wakes Render free tier) ───────────────────────────
 export const pingBackend = () => {
   fetch(`${BASE}/health`, { method: 'GET' }).catch(() => {});
 };
